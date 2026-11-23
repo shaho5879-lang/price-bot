@@ -1,32 +1,38 @@
-import os
-import time
 from datetime import datetime
+import os
+import socket
+import time
 from bs4 import BeautifulSoup
 import cloudscraper
 import jdatetime
 import pytz
 import requests
 import telebot
+import urllib3.util.connection as urllib3_cn
 
-# دریافت توکن از گیت‌هاب
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+# --- حل قطعی مشکل تایم‌اوت تلگرام در سرور گیت‌هاب (اجبار به استفاده از IPv4) ---
+def allowed_gai_family():
+    return socket.AF_INET
+
+
+urllib3_cn.allowed_gai_family = allowed_gai_family
+# -------------------------------------------------------------------------
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 bot = telebot.TeleBot(BOT_TOKEN)
-
 scraper = cloudscraper.create_scraper()
 
 
 def rial_to_toman(price_str):
-    """تبدیل ریال به تومان و فرمت‌بندی سه‌رقمی"""
     try:
-        clean_price = int(price_str.replace(",", "").strip())
-        toman = clean_price // 10
-        return f"{toman:,}"
+        clean_price = int(str(price_str).replace(",", "").strip())
+        return f"{clean_price // 10:,}"
     except:
         return "نامشخص"
 
 
 def get_market_data():
-    """استخراج اطلاعات از بازار تهران و جهان"""
     data = {}
     urls = [
         "https://www.tgju.org/currency",
@@ -34,7 +40,6 @@ def get_market_data():
         "https://www.tgju.org/coin",
     ]
 
-    # کلیدهای مورد نیاز از سایت مرجع
     keys = {
         "usd": "price_dollar_rl",
         "eur": "price_eur",
@@ -58,7 +63,6 @@ def get_market_data():
         "gerami": "gerami",
     }
 
-    # استخراج از صفحات
     for url in urls:
         try:
             res = scraper.get(url, timeout=10)
@@ -72,30 +76,27 @@ def get_market_data():
                             td = row.find("td", class_="nf")
                             price = td.text if td else None
                         if price:
-                            if name == "ons":
-                                data[name] = price  # اونس به دلار است
-                            else:
-                                data[name] = rial_to_toman(price)
+                            data[name] = (
+                                price
+                                if name == "ons"
+                                else rial_to_toman(price)
+                            )
         except Exception as e:
             print(f"Error scraping {url}: {e}")
 
-    # محاسبه دقیق هر گرم طلای آب‌شده و دست دوم (در صورت عدم وجود مستقیم)
     try:
         mesghal_toman = int(data.get("mesghal", "0").replace(",", ""))
-        abshodeh_gram = int(mesghal_toman / 4.3318)
-        data["abshodeh_gram"] = f"{abshodeh_gram:,}"
+        data["abshodeh_gram"] = f"{int(mesghal_toman / 4.3318):,}"
     except:
         data["abshodeh_gram"] = "نامشخص"
 
     if "gold_second" not in data or data["gold_second"] == "نامشخص":
         try:
             g18 = int(data.get("gold18", "0").replace(",", ""))
-            second_hand = int(g18 * (740 / 750))  # فرمول بازار برای طلای شکسته
-            data["gold_second"] = f"{second_hand:,}"
+            data["gold_second"] = f"{int(g18 * (740 / 750)):,}"
         except:
             data["gold_second"] = "نامشخص"
 
-    # دریافت قیمت بیت‌کوین و اتریوم از CoinGecko
     try:
         crypto_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd"
         crypto_res = requests.get(crypto_url, timeout=10).json()
@@ -109,13 +110,14 @@ def get_market_data():
 
 
 def format_message(data):
-    """طراحی قالب پست تلگرام"""
     tz = pytz.timezone("Asia/Tehran")
     now = datetime.now(tz)
-    j_date = jdatetime.datetime.fromgregorian(datetime=now).strftime("%Y/%m/%d")
+    j_date = jdatetime.datetime.fromgregorian(datetime=now).strftime(
+        "%Y/%m/%d"
+    )
     current_time = now.strftime("%H:%M:%S")
 
-    msg = f"""📊 **گزارش لحظه‌ای بازار تهران و جهان**
+    return f"""📊 **گزارش لحظه‌ای بازار تهران و جهان**
 📅 تاریخ: `{j_date}`  |  ⏰ ساعت: `{current_time}`
 ➖➖➖➖➖➖➖➖➖➖
 💵 **۱۰ ارز برتر بازار تهران:**
@@ -150,39 +152,47 @@ def format_message(data):
 🔵 اتریوم (ETH): **{data.get('eth', '-')}** دلار
 ➖➖➖➖➖➖➖➖➖➖
 🔄 *بروزرسانی به وقت رسمی ایران*"""
-    return msg
 
 
-# هندلر برای کانال خصوصی و گروه‌ها
-@bot.channel_post_handler(
-    func=lambda message: message.text in ["پرایس", "/price", "price"]
-)
-@bot.message_handler(
-    func=lambda message: message.text in ["پرایس", "/price", "price"]
-)
-def send_prices(message):
+def is_price_command(message):
+    if not message.text:
+        return False
+    t = message.text.strip().lower().replace("ي", "ی").replace("ك", "ک")
+    return t in ["پرایس", "/price", "price", "قیمت", "/start"]
+
+
+def handle_request(message):
     chat_id = message.chat.id
     try:
-        # حذف پیام "پرایس" برای زیبایی کانال
-        bot.delete_message(chat_id, message.message_id)
+        if message.text.strip() != "/start":
+            bot.delete_message(chat_id, message.message_id)
     except:
         pass
 
-    # ارسال پیام موقت
     wait_msg = bot.send_message(
         chat_id, "⏳ در حال دریافت آخرین قیمت‌های بازار..."
     )
-
-    # دریافت اطلاعات و ساخت پست
     market_data = get_market_data()
     final_text = format_message(market_data)
-
-    # ویرایش پیام موقت و تبدیل آن به جدول قیمت‌ها
     bot.edit_message_text(
         final_text, chat_id, wait_msg.message_id, parse_mode="Markdown"
     )
 
 
-print("Bot is running...")
-# اجرای ربات به مدت ۵ ساعت و ۵۰ دقیقه (محدودیت هر نوبت گیت‌هاب اکشن)
-bot.polling(none_stop=True, interval=2, timeout=20)
+@bot.channel_post_handler(func=is_price_command)
+def channel_handler(message):
+    handle_request(message)
+
+
+@bot.message_handler(func=is_price_command)
+def private_handler(message):
+    handle_request(message)
+
+
+print("Bot connected via IPv4 and is running...")
+while True:
+    try:
+        bot.polling(none_stop=True, interval=2, timeout=20)
+    except Exception as e:
+        print(f"Reconnecting... {e}")
+        time.sleep(3)
