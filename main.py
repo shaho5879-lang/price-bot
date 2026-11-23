@@ -8,6 +8,7 @@ import jdatetime
 import pytz
 import requests
 import telebot
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 import urllib3.util.connection as urllib3_cn
 
 
@@ -41,6 +42,26 @@ def rial_to_toman(price_str):
         return f"{clean_price // 10:,}"
     except:
         return "نامشخص"
+
+
+def get_inline_buttons():
+    """ساخت دکمه‌های شیشه‌ای زیر پست کانال"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    btn_update = InlineKeyboardButton(
+        "🔄 بروزرسانی لحظه‌ای همین تابلو", callback_data="update_board"
+    )
+    btn_new = InlineKeyboardButton(
+        "📊 ارسال قیمت در پست جدید", callback_data="new_post"
+    )
+    markup.add(btn_update, btn_new)
+    return markup
+
+
+def get_pv_keyboard():
+    """ساخت دکمه کیبورد برای پی‌وی ربات"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("📊 قیمت لحظه‌ای بازار"))
+    return markup
 
 
 def get_market_data():
@@ -79,7 +100,6 @@ def get_market_data():
             res = scraper.get(url, timeout=10)
             soup = BeautifulSoup(res.text, "html.parser")
 
-            # تلاش برای گرفتن اونس طلا از نوار بالای سایت
             if "ons" not in data:
                 ons_li = soup.find("li", id="l-ons")
                 if ons_li:
@@ -104,14 +124,12 @@ def get_market_data():
         except Exception as e:
             print(f"Error scraping {url}: {e}")
 
-    # محاسبه گرم آب‌شده از روی مظنه مثقال
     try:
         mesghal_toman = int(data.get("mesghal", "0").replace(",", ""))
         data["abshodeh_gram"] = f"{int(mesghal_toman / 4.3318):,}"
     except:
         data["abshodeh_gram"] = "نامشخص"
 
-    # محاسبه طلای دست دوم (شکسته)
     if "gold_second" not in data or data["gold_second"] == "نامشخص":
         try:
             g18 = int(data.get("gold18", "0").replace(",", ""))
@@ -119,7 +137,6 @@ def get_market_data():
         except:
             data["gold_second"] = "نامشخص"
 
-    # دریافت بیت‌کوین، اتریوم و پشتیبان اونس جهانی طلا
     try:
         crypto_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,pax-gold&vs_currencies=usd"
         crypto_res = requests.get(crypto_url, timeout=10).json()
@@ -194,13 +211,22 @@ def is_price_command(message):
     if not message.text:
         return False
     t = message.text.strip().lower().replace("ي", "ی").replace("ك", "ک")
-    return t in ["پرایس", "قیمت", "/price", "price", "/start"]
+    return t in [
+        "پرایس",
+        "قیمت",
+        "/price",
+        "price",
+        "/start",
+        "📊 قیمت لحظه‌ای بازار",
+    ]
 
 
 def handle_request(message):
     chat_id = message.chat.id
+    is_private = message.chat.type == "private"
+
     try:
-        if message.text.strip() != "/start":
+        if message.text.strip() != "/start" and not is_private:
             bot.delete_message(chat_id, message.message_id)
     except:
         pass
@@ -210,9 +236,61 @@ def handle_request(message):
     )
     market_data = get_market_data()
     final_text = format_message(market_data)
+
     bot.edit_message_text(
-        final_text, chat_id, wait_msg.message_id, parse_mode="Markdown"
+        final_text,
+        chat_id,
+        wait_msg.message_id,
+        parse_mode="Markdown",
+        reply_markup=get_inline_buttons(),
     )
+
+    if is_private and message.text.strip() == "/start":
+        bot.send_message(
+            chat_id,
+            f"{RLM}از دکمه زیر هم می‌توانید استفاده کنید:",
+            reply_markup=get_pv_keyboard(),
+        )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data in ["update_board", "new_post"]
+)
+def handle_buttons(call):
+    # نمایش پیغام کوچک بالای صفحه تلگرام هنگام لمس دکمه
+    bot.answer_callback_query(
+        call.id, "⏳ در حال دریافت آخرین قیمت‌های بازار...", show_alert=False
+    )
+
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
+
+    market_data = get_market_data()
+    final_text = format_message(market_data)
+
+    if call.data == "update_board":
+        try:
+            bot.edit_message_text(
+                final_text,
+                chat_id,
+                msg_id,
+                parse_mode="Markdown",
+                reply_markup=get_inline_buttons(),
+            )
+        except Exception as e:
+            pass
+    elif call.data == "new_post":
+        # حذف دکمه از پست قبلی برای تمیز ماندن کانال و ارسال پست جدید با دکمه
+        try:
+            bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=None)
+        except:
+            pass
+        bot.send_message(
+            chat_id,
+            final_text,
+            parse_mode="Markdown",
+            reply_markup=get_inline_buttons(),
+        )
 
 
 @bot.channel_post_handler(func=is_price_command)
@@ -225,7 +303,7 @@ def private_handler(message):
     handle_request(message)
 
 
-print("Bot is running with Persian RTL format...")
+print("Bot is running with Inline Buttons...")
 while True:
     try:
         bot.polling(none_stop=True, interval=2, timeout=20)
