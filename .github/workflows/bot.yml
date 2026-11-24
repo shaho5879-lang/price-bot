@@ -3,9 +3,12 @@ name: Telegram Price Bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *' # روشن شدن خودکار هر ۴ ساعت (بدون قطعی در صبح)
+    - cron: '0 */5 * * *'
 
-# قفل هوشمند: جلوگیری از روشن شدن ۲ ربات همزمان (خاموش کردن خودکار قبلی)
+permissions:
+  actions: write
+  contents: read
+
 concurrency:
   group: telegram-price-bot
   cancel-in-progress: true
@@ -33,4 +36,11 @@ jobs:
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       run: |
-        timeout 350m python main.py || true
+        timeout 345m python main.py || true
+
+    - name: Auto Restart Bot (روشن کردن خودکار شیفت بعدی)
+      if: success()
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh workflow run bot.yml
