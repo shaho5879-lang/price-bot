@@ -1,21 +1,26 @@
 name: Telegram Price Bot
 
 on:
-  workflow_dispatch: # امکان روشن کردن دستی
+  workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *' # روشن شدن خودکار هر ۶ ساعت برای آنلاین ماندن ۲۴ ساعته
+    - cron: '0 */4 * * *' # روشن شدن خودکار هر ۴ ساعت (بدون قطعی در صبح)
+
+# قفل هوشمند: جلوگیری از روشن شدن ۲ ربات همزمان (خاموش کردن خودکار قبلی)
+concurrency:
+  group: telegram-price-bot
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 355 # اجرا به مدت نزدیک به ۶ ساعت
+    timeout-minutes: 355
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
